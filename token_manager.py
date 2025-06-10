@@ -1,92 +1,91 @@
 import requests
+import os
 import json
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
 import streamlit as st
+
+load_dotenv()
 
 class TokenManager:
     def __init__(self):
-        # Access secrets from st.secrets instead of environment variables
-        self.auth_url = st.secrets["AUTH_URL"]
-        self.client_id = st.secrets["CLIENT_ID"]
-        self.client_secret = st.secrets["CLIENT_SECRET"]
-        self.username = st.secrets["USERNAME"]
-        self.password = st.secrets["PASSWORD"]
+        self.auth_url = os.getenv('AUTH_URL')
+        self.client_id = os.getenv('CLIENT_ID')
+        self.client_secret = os.getenv('CLIENT_SECRET')
+        self.username = os.getenv('USERNAME')
+        self.password = os.getenv('PASSWORD')
 
         self._initialize_token_state()
 
     def _initialize_token_state(self):
-        # Initialize all required session state variables with defaults
         if "access_token" not in st.session_state:
-            try:
-                # Try to get from secrets, but it might not exist
-                st.session_state.access_token = st.secrets.get('ACCESS_TOKEN', None)
-            except KeyError:
-                st.session_state.access_token = None
-                
+            st.session_state.access_token = os.getenv('ACCESS_TOKEN')
         if "refresh_token" not in st.session_state:
-            try:
-                st.session_state.refresh_token = st.secrets.get('REFRESH_TOKEN', None)
-            except KeyError:
-                st.session_state.refresh_token = None
-                
+            st.session_state.refresh_token = os.getenv('REFRESH_TOKEN')
         if "token_expires_at" not in st.session_state:
-            try:
-                # Try to load expiry from secrets or set to None
-                expires_str = st.secrets.get('TOKEN_EXPIRES_AT', None)
-                if expires_str:
-                    try:
-                        st.session_state.token_expires_at = datetime.fromisoformat(expires_str)
-                    except ValueError:
-                        st.session_state.token_expires_at = None
-                else:
+            # Try to load expiry from env or set to None
+            expires_str = os.getenv('TOKEN_EXPIRES_AT')
+            if expires_str:
+                try:
+                    st.session_state.token_expires_at = datetime.fromisoformat(expires_str)
+                except ValueError:
                     st.session_state.token_expires_at = None
-            except KeyError:
+            else:
                 st.session_state.token_expires_at = None
-                
         if "last_refresh_time" not in st.session_state:
             st.session_state.last_refresh_time = None
-            
         if "refresh_count_today" not in st.session_state:
             st.session_state.refresh_count_today = 0
-            
         if "refresh_date" not in st.session_state:
             st.session_state.refresh_date = datetime.now().date()
-            
-        if "token_manager_initialized" not in st.session_state:
-            st.session_state.token_manager_initialized = True
 
-    def _save_tokens_to_persistent_storage(self, access_token, refresh_token, expires_at=None):
-        """
-        Save tokens to session state only (no file writing in Streamlit Cloud)
-        In production, you might want to use a database or external storage
-        """
+    def _save_tokens_to_env(self, access_token, refresh_token, expires_at=None):
         try:
-            # Update session state
-            st.session_state.access_token = access_token
-            st.session_state.refresh_token = refresh_token
-            if expires_at:
-                st.session_state.token_expires_at = expires_at
-            
-            # Note: In Streamlit Cloud, you cannot write to files
-            # Consider using a database or external storage service for persistence
-            print("✅ Tokens saved to session state")
-            
-            # Optional: Display warning about token persistence
-            if not hasattr(st.session_state, 'token_persistence_warning_shown'):
-                st.session_state.token_persistence_warning_shown = True
-                st.info("ℹ️ Tokens are stored in session state and will be lost when the session ends. Consider implementing database storage for production use.")
-                
+            env_path = '.env'
+            if os.path.exists(env_path):
+                with open(env_path, 'r') as f:
+                    lines = f.readlines()
+
+                updated_lines = []
+                found_access = False
+                found_refresh = False
+                found_expires = False
+
+                for line in lines:
+                    if line.startswith('ACCESS_TOKEN='):
+                        updated_lines.append(f'ACCESS_TOKEN={access_token}\n')
+                        found_access = True
+                    elif line.startswith('REFRESH_TOKEN='):
+                        updated_lines.append(f'REFRESH_TOKEN={refresh_token}\n')
+                        found_refresh = True
+                    elif line.startswith('TOKEN_EXPIRES_AT='):
+                        if expires_at:
+                            updated_lines.append(f'TOKEN_EXPIRES_AT={expires_at.isoformat()}\n')
+                        found_expires = True
+                    else:
+                        updated_lines.append(line)
+
+                if not found_access:
+                    updated_lines.append(f'ACCESS_TOKEN={access_token}\n')
+                if not found_refresh:
+                    updated_lines.append(f'REFRESH_TOKEN={refresh_token}\n')
+                if not found_expires and expires_at:
+                    updated_lines.append(f'TOKEN_EXPIRES_AT={expires_at.isoformat()}\n')
+
+                with open(env_path, 'w') as f:
+                    f.writelines(updated_lines)
+                    
+                print("✅ Tokens saved to .env file")
         except Exception as e:
-            print(f"Warning: Could not save tokens: {e}")
+            print(f"Warning: Could not save tokens to .env file: {e}")
 
     def _is_token_expired(self):
         """Check if the current token is expired"""
-        # Ensure session state is initialized
-        if not hasattr(st.session_state, 'access_token') or not st.session_state.access_token:
+        if not st.session_state.access_token:
             print("❌ No access token available")
             return True
             
-        if not hasattr(st.session_state, 'token_expires_at') or st.session_state.token_expires_at is None:
+        if st.session_state.token_expires_at is None:
             print("⚠️ No expiry time set, assuming token is expired")
             return True
             
@@ -104,11 +103,21 @@ class TokenManager:
 
     def _validate_token_with_api(self):
         """Optional: Validate token by making a test API call"""
-        if not hasattr(st.session_state, 'access_token') or not st.session_state.access_token:
+        if not st.session_state.access_token:
             return False
             
         # You can implement a simple API call to validate the token
         # This is optional and depends on your API having a validation endpoint
+        # Example:
+        # try:
+        #     response = requests.get(
+        #         "YOUR_API_VALIDATION_ENDPOINT",
+        #         headers={"Authorization": f"Bearer {st.session_state.access_token}"}
+        #     )
+        #     return response.status_code == 200
+        # except:
+        #     return False
+        
         return True  # Skip API validation for now
     
     def _can_refresh_token(self):
@@ -138,7 +147,7 @@ class TokenManager:
 
     def _refresh_access_token(self):
         """Private method to refresh the access token"""
-        if not hasattr(st.session_state, 'refresh_token') or not st.session_state.refresh_token:
+        if not st.session_state.refresh_token:
             raise Exception("No refresh token available")
         
         # Check if we can refresh without hitting limits
@@ -160,21 +169,23 @@ class TokenManager:
             response.raise_for_status()
             data = response.json()
 
-            access_token = data.get("access_token")
-            new_refresh_token = data.get("refresh_token", st.session_state.refresh_token)
-            
+            st.session_state.access_token = data.get("access_token")
+            new_refresh_token = data.get("refresh_token")
+            if new_refresh_token:
+                st.session_state.refresh_token = new_refresh_token
+
             expires_in = data.get("expires_in", 3600)
-            expires_at = datetime.now() + timedelta(seconds=expires_in)
+            st.session_state.token_expires_at = datetime.now() + timedelta(seconds=expires_in)
             
             # Update refresh tracking
             st.session_state.last_refresh_time = datetime.now()
             st.session_state.refresh_count_today += 1
 
-            # Save to persistent storage (session state in this case)
-            self._save_tokens_to_persistent_storage(
-                access_token, 
-                new_refresh_token,
-                expires_at
+            # Save to .env file
+            self._save_tokens_to_env(
+                st.session_state.access_token, 
+                st.session_state.refresh_token,
+                st.session_state.token_expires_at
             )
 
             print(f"✅ Access token refreshed successfully. ({st.session_state.refresh_count_today} refreshes today)")
@@ -190,10 +201,6 @@ class TokenManager:
         """Get a valid access token, only refreshing if necessary"""
         print("🔍 Checking token validity...")
         
-        # Ensure session state is initialized
-        if not hasattr(st.session_state, 'access_token'):
-            self._initialize_token_state()
-        
         # First check if token exists and is not expired based on timestamp
         if st.session_state.access_token and not self._is_token_expired():
             print("✅ Using existing valid token")
@@ -208,7 +215,7 @@ class TokenManager:
             print(f"❌ Failed to refresh token: {e}")
             
             # Only return existing token if absolutely necessary
-            if hasattr(st.session_state, 'access_token') and st.session_state.access_token:
+            if st.session_state.access_token:
                 st.warning("Using potentially expired token as fallback")
                 return st.session_state.access_token
             else:
@@ -226,17 +233,13 @@ class TokenManager:
 
     def get_token_status(self):
         """Get current token status for debugging"""
-        # Ensure session state is initialized
-        if not hasattr(st.session_state, 'token_manager_initialized'):
-            self._initialize_token_state()
-            
         status = {
-            "has_access_token": bool(getattr(st.session_state, 'access_token', None)),
-            "has_refresh_token": bool(getattr(st.session_state, 'refresh_token', None)),
-            "expires_at": getattr(st.session_state, 'token_expires_at', None),
-            "is_expired": self._is_token_expired(),
-            "refresh_count_today": getattr(st.session_state, 'refresh_count_today', 0),
-            "last_refresh_time": getattr(st.session_state, 'last_refresh_time', None)
+            "has_access_token": bool(st.session_state.access_token),
+            "has_refresh_token": bool(st.session_state.refresh_token),
+            "expires_at": st.session_state.token_expires_at,
+            "is_expired": self._is_token_expired() if st.session_state.access_token else True,
+            "refresh_count_today": st.session_state.refresh_count_today,
+            "last_refresh_time": st.session_state.last_refresh_time
         }
         return status
 
