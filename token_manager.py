@@ -1,30 +1,28 @@
 import requests
-import os
 import json
 from datetime import datetime, timedelta
-from dotenv import load_dotenv
 import streamlit as st
-
-load_dotenv()
 
 class TokenManager:
     def __init__(self):
-        self.auth_url = os.getenv('AUTH_URL')
-        self.client_id = os.getenv('CLIENT_ID')
-        self.client_secret = os.getenv('CLIENT_SECRET')
-        self.username = os.getenv('USERNAME')
-        self.password = os.getenv('PASSWORD')
+        # Access secrets from st.secrets instead of environment variables
+        self.auth_url = st.secrets["AUTH_URL"]
+        self.client_id = st.secrets["CLIENT_ID"]
+        self.client_secret = st.secrets["CLIENT_SECRET"]
+        self.username = st.secrets["USERNAME"]
+        self.password = st.secrets["PASSWORD"]
 
         self._initialize_token_state()
 
     def _initialize_token_state(self):
         if "access_token" not in st.session_state:
-            st.session_state.access_token = os.getenv('ACCESS_TOKEN')
+            # Try to get from secrets, but it might not exist initially
+            st.session_state.access_token = st.secrets.get('ACCESS_TOKEN', None)
         if "refresh_token" not in st.session_state:
-            st.session_state.refresh_token = os.getenv('REFRESH_TOKEN')
+            st.session_state.refresh_token = st.secrets.get('REFRESH_TOKEN', None)
         if "token_expires_at" not in st.session_state:
-            # Try to load expiry from env or set to None
-            expires_str = os.getenv('TOKEN_EXPIRES_AT')
+            # Try to load expiry from secrets or set to None
+            expires_str = st.secrets.get('TOKEN_EXPIRES_AT', None)
             if expires_str:
                 try:
                     st.session_state.token_expires_at = datetime.fromisoformat(expires_str)
@@ -39,45 +37,29 @@ class TokenManager:
         if "refresh_date" not in st.session_state:
             st.session_state.refresh_date = datetime.now().date()
 
-    def _save_tokens_to_env(self, access_token, refresh_token, expires_at=None):
+    def _save_tokens_to_persistent_storage(self, access_token, refresh_token, expires_at=None):
+        """
+        Save tokens to session state only (no file writing in Streamlit Cloud)
+        In production, you might want to use a database or external storage
+        """
         try:
-            env_path = '.env'
-            if os.path.exists(env_path):
-                with open(env_path, 'r') as f:
-                    lines = f.readlines()
-
-                updated_lines = []
-                found_access = False
-                found_refresh = False
-                found_expires = False
-
-                for line in lines:
-                    if line.startswith('ACCESS_TOKEN='):
-                        updated_lines.append(f'ACCESS_TOKEN={access_token}\n')
-                        found_access = True
-                    elif line.startswith('REFRESH_TOKEN='):
-                        updated_lines.append(f'REFRESH_TOKEN={refresh_token}\n')
-                        found_refresh = True
-                    elif line.startswith('TOKEN_EXPIRES_AT='):
-                        if expires_at:
-                            updated_lines.append(f'TOKEN_EXPIRES_AT={expires_at.isoformat()}\n')
-                        found_expires = True
-                    else:
-                        updated_lines.append(line)
-
-                if not found_access:
-                    updated_lines.append(f'ACCESS_TOKEN={access_token}\n')
-                if not found_refresh:
-                    updated_lines.append(f'REFRESH_TOKEN={refresh_token}\n')
-                if not found_expires and expires_at:
-                    updated_lines.append(f'TOKEN_EXPIRES_AT={expires_at.isoformat()}\n')
-
-                with open(env_path, 'w') as f:
-                    f.writelines(updated_lines)
-                    
-                print("✅ Tokens saved to .env file")
+            # Update session state
+            st.session_state.access_token = access_token
+            st.session_state.refresh_token = refresh_token
+            if expires_at:
+                st.session_state.token_expires_at = expires_at
+            
+            # Note: In Streamlit Cloud, you cannot write to files
+            # Consider using a database or external storage service for persistence
+            print("✅ Tokens saved to session state")
+            
+            # Optional: Display warning about token persistence
+            if not hasattr(st.session_state, 'token_persistence_warning_shown'):
+                st.session_state.token_persistence_warning_shown = True
+                st.info("ℹ️ Tokens are stored in session state and will be lost when the session ends. Consider implementing database storage for production use.")
+                
         except Exception as e:
-            print(f"Warning: Could not save tokens to .env file: {e}")
+            print(f"Warning: Could not save tokens: {e}")
 
     def _is_token_expired(self):
         """Check if the current token is expired"""
@@ -108,16 +90,6 @@ class TokenManager:
             
         # You can implement a simple API call to validate the token
         # This is optional and depends on your API having a validation endpoint
-        # Example:
-        # try:
-        #     response = requests.get(
-        #         "YOUR_API_VALIDATION_ENDPOINT",
-        #         headers={"Authorization": f"Bearer {st.session_state.access_token}"}
-        #     )
-        #     return response.status_code == 200
-        # except:
-        #     return False
-        
         return True  # Skip API validation for now
     
     def _can_refresh_token(self):
@@ -169,23 +141,21 @@ class TokenManager:
             response.raise_for_status()
             data = response.json()
 
-            st.session_state.access_token = data.get("access_token")
-            new_refresh_token = data.get("refresh_token")
-            if new_refresh_token:
-                st.session_state.refresh_token = new_refresh_token
-
+            access_token = data.get("access_token")
+            new_refresh_token = data.get("refresh_token", st.session_state.refresh_token)
+            
             expires_in = data.get("expires_in", 3600)
-            st.session_state.token_expires_at = datetime.now() + timedelta(seconds=expires_in)
+            expires_at = datetime.now() + timedelta(seconds=expires_in)
             
             # Update refresh tracking
             st.session_state.last_refresh_time = datetime.now()
             st.session_state.refresh_count_today += 1
 
-            # Save to .env file
-            self._save_tokens_to_env(
-                st.session_state.access_token, 
-                st.session_state.refresh_token,
-                st.session_state.token_expires_at
+            # Save to persistent storage (session state in this case)
+            self._save_tokens_to_persistent_storage(
+                access_token, 
+                new_refresh_token,
+                expires_at
             )
 
             print(f"✅ Access token refreshed successfully. ({st.session_state.refresh_count_today} refreshes today)")
